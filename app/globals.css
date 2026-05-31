@@ -1,0 +1,70 @@
+/* app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg:         #0a0a0c;
+  --surface:    #111114;
+  --card:       #161619;
+  --card-hi:    #1c1c20;
+  --border:     #242428;
+  --border-hi:  #2e2e35;
+  --text-1:     #f0f0f5;
+  --text-2:     #8888a0;
+  --text-3:     #444456;
+  --green:      #22c55e;
+  --blue:       #3b82f6;
+  --amber:      #f59e0b;
+  --red:        #ef4444;
+  --purple:     #a855f7;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: 'Syne', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+
+/* Input placeholders */
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+input:focus, textarea:focus { outline: none; border-color: var(--green) !important; }
+
+/* Hover states */
+.nav-tab:hover   { color: var(--text-2) !important; }
+.card-row:hover  { background: var(--surface) !important; }
+.btn-ghost:hover { opacity: 0.8; }
+
+/* Animations */
+@keyframes blink    { 0%,100%{opacity:1} 50%{opacity:.2} }
+@keyframes fadein   { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+@keyframes pulse    { 0%,100%{opacity:1} 50%{opacity:.5} }
+@keyframes slideup  { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+@keyframes scalein  { from{opacity:0;transform:scale(.95)} to{opacity:1;transform:scale(1)} }
+@keyframes shimmer  { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+
+.animate-fadein  { animation: fadein  .4s ease both; }
+.animate-slideup { animation: slideup .4s ease both; }
+.animate-scalein { animation: scalein .3s ease both; }
+.animate-pulse-slow { animation: pulse 2s ease-in-out infinite; }
+
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green); display: inline-block;
+  margin-left: 4px; animation: blink 1.2s ease-in-out infinite;
+}
+
+/* Stagger delays */
+.delay-1 { animation-delay: .05s; }
+.delay-2 { animation-delay: .10s; }
+.delay-3 { animation-delay: .15s; }
+.delay-4 { animation-delay: .20s; }
+.delay-5 { animation-delay: .25s; }
