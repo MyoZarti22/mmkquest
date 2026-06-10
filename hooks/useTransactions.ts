@@ -2,8 +2,8 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import {
-  collection, addDoc, query, where, orderBy,
-  onSnapshot, serverTimestamp, getDocs,
+  collection, addDoc, query,
+  where, onSnapshot, serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type { AuthUser } from "./useAuth";
@@ -12,25 +12,14 @@ export type Transaction = {
   id:        string;
   userId:    string;
   name:      string;
-  amount:    number;         // negative = expense, positive = income
+  amount:    number;
   type:      "expense" | "income";
   category:  string;
   wallet:    string;
-  source:    "manual" | "sms" | "email_parse";
   timestamp: string;
 };
 
-export type WalletBalance = {
-  id:      string;
-  name:    string;
-  short:   string;
-  balance: number;
-  color:   string;
-  status:  "connected" | "manual";
-};
-
-// Myanmar wallets — balances tracked manually until API integration
-export const WALLETS: WalletBalance[] = [
+export const WALLETS = [
   { id: "kbzpay",  name: "KBZ Pay",  short: "KBZ",  balance: 180000, color: "#22c55e", status: "connected" },
   { id: "wavepay", name: "WavePay",  short: "Wave", balance: 82500,  color: "#3b82f6", status: "connected" },
   { id: "cbpay",   name: "CB Pay",   short: "CB",   balance: 25000,  color: "#a855f7", status: "connected" },
@@ -49,143 +38,120 @@ export const CAT_COLORS: Record<string, string> = {
   shopping: "#ef4444", bills: "#06b6d4", income: "#22c55e", other: "#8888a0",
 };
 
-function calcXP(spent: number, goal: number, emergency: number): { xp: number; zone: string } {
-  if (spent <= goal) {
-    const saved  = goal - spent;
-    const bonus  = Math.floor(saved / 1000) * 5;
-    return { xp: 100 + bonus, zone: "safe" };
-  }
-  if (spent <= emergency) return { xp: 40, zone: "warn" };
-  return { xp: 0, zone: "danger" };
-}
-
 export function useTransactions(user: AuthUser | null) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading,      setLoading]      = useState(true);
+  const [loading,      setLoading]      = useState(false);
 
-  // Real-time listener on Firestore
   useEffect(() => {
-    if (!user) { setTransactions([]); setLoading(false); return; }
+    if (!user?.uid) {
+      setTransactions([]);
+      return;
+    }
+
+    setLoading(true);
 
     const q = query(
       collection(db, "transactions"),
-      where("userId",  "==", user.uid),
-      orderBy("timestamp", "desc")
+      where("userId", "==", user.uid)
     );
 
-    const unsub = onSnapshot(q, (snap) => {
-      const txs = snap.docs.map((d) => ({
-        id: d.id, ...d.data(),
-      })) as Transaction[];
-      setTransactions(txs);
-      setLoading(false);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const txs = snap.docs
+          .map((d) => ({ id: d.id, ...d.data() } as Transaction))
+          .sort((a, b) =>
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+        setTransactions(txs);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Firestore snapshot error:", err);
+        setTransactions([]);
+        setLoading(false);
+      }
+    );
 
     return () => unsub();
   }, [user?.uid]);
 
-  // Add a new CASH transaction (manual entry)
   const addCashTransaction = useCallback(async (
-    name: string,
-    amount: number,
-    category: string,
-    wallet: string,
+    name: string, amount: number, category: string, wallet: string
   ) => {
     if (!user) throw new Error("Not logged in");
-
     const tx = {
       userId:    user.uid,
       name,
-      amount:    -Math.abs(amount),       // always negative for expense
+      amount:    -Math.abs(amount),
       type:      "expense" as const,
       category,
       wallet,
-      source:    "manual" as const,
       timestamp: new Date().toISOString(),
     };
-
     await addDoc(collection(db, "transactions"), {
-      ...tx, createdAt: serverTimestamp(),
+      ...tx,
+      createdAt: serverTimestamp(),
     });
 
-    // Check if budget warning should fire
-    const spent = transactions
+    // Background: send notification email
+    const newSpent = transactions
       .filter((t) => t.type === "expense")
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0) + Math.abs(amount);
+      .reduce((s, t) => s + Math.abs(t.amount), 0) + amount;
 
-    const pct = (spent / user.goalBudget) * 100;
+    const pct = (newSpent / (user.goalBudget || 175000)) * 100;
     if (pct >= 80) {
-      // Fire notification API
-      await fetch("/api/notify", {
+      fetch("/api/notify", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type:   "budget_warning",
           userId: user.uid,
           data: {
-            spent,
+            spent:     newSpent,
             goal:      user.goalBudget,
             emergency: user.emergencyLimit,
             message:   `${Math.round(pct)}% of monthly budget used`,
           },
         }),
-      });
+      }).catch(() => {});
     }
 
-    // Transaction notification
-    await fetch("/api/notify", {
+    fetch("/api/notify", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type:   "transaction",
         userId: user.uid,
-        data: {
-          txName:   name,
-          amount:   -Math.abs(amount),
-          wallet,
-          category,
-          message:  `Expense logged: ${name} — ${amount.toLocaleString()} MMK`,
-        },
+        data: { txName: name, amount: -Math.abs(amount), wallet, category, message: `Expense: ${name}` },
       }),
-    });
+    }).catch(() => {});
 
     return tx;
   }, [user, transactions]);
 
-  // Computed values
+  // Current month stats
+  const now = new Date();
   const currentMonthTx = transactions.filter((t) => {
     const d = new Date(t.timestamp);
-    const now = new Date();
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   });
 
-  const totalSpent  = currentMonthTx
-    .filter((t) => t.type === "expense")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
-
-  const totalIncome = currentMonthTx
-    .filter((t) => t.type === "income")
-    .reduce((s, t) => s + t.amount, 0);
-
+  const totalSpent  = currentMonthTx.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0);
+  const totalIncome = currentMonthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const totalBalance = WALLETS.reduce((s, w) => s + w.balance, 0);
 
   const categoryTotals: Record<string, number> = {};
-  currentMonthTx
-    .filter((t) => t.type === "expense")
-    .forEach((t) => {
-      categoryTotals[t.category] = (categoryTotals[t.category] || 0) + Math.abs(t.amount);
-    });
+  currentMonthTx.filter((t) => t.type === "expense").forEach((t) => {
+    categoryTotals[t.category] = (categoryTotals[t.category] || 0) + Math.abs(t.amount);
+  });
 
-  const { xp, zone } = calcXP(
-    totalSpent,
-    user?.goalBudget    || 175000,
-    user?.emergencyLimit || 225000
-  );
-
-  const budgetPct = Math.min(
-    (totalSpent / (user?.emergencyLimit || 225000)) * 100,
-    100
-  );
+  const goal      = user?.goalBudget     || 175000;
+  const emergency = user?.emergencyLimit || 225000;
+  const zone      = totalSpent <= goal ? "safe" : totalSpent <= emergency ? "warn" : "danger";
+  const bonusXP   = zone === "safe" ? Math.floor((goal - totalSpent) / 1000) * 5 : 0;
+  const projectedXP = zone === "safe" ? 100 + bonusXP : zone === "warn" ? 40 : 0;
+  const budgetPct = Math.min((totalSpent / emergency) * 100, 100);
 
   return {
     transactions,
@@ -197,6 +163,6 @@ export function useTransactions(user: AuthUser | null) {
     categoryTotals,
     budgetPct,
     zone,
-    projectedXP: xp,
+    projectedXP,
   };
 }

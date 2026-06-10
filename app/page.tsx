@@ -1,5 +1,5 @@
 // app/page.tsx
-// Root page — redirects to auth (login/register)
+// Root page — redirect to /auth
 import { redirect } from "next/navigation";
 
 export default function RootPage() {
