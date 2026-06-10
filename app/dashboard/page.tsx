@@ -271,7 +271,7 @@ function HomeScreen({ user, txData, walletBalances }: any) {
         {/* Budget Meter */}
         <Card style={{ gridColumn: "1/-1" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <Lbl icon="bar" style={{ margin: 0 }}>Budget Meter<LiveDot /></Lbl>
+            <Lbl icon="bar">Budget Meter<LiveDot /></Lbl>
             <span style={{ fontSize: 10, fontFamily: "monospace", color: "#444456" }}>+{projectedXP} XP projected</span>
           </div>
           <div style={{ height: 8, background: "#242428", borderRadius: 4, overflow: "hidden" }}>
@@ -336,7 +336,7 @@ function HomeScreen({ user, txData, walletBalances }: any) {
         {/* Recent Transactions */}
         <Card style={{ gridColumn: "1/-1" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <Lbl icon="wallet" style={{ margin: 0 }}>Recent Transactions<LiveDot /></Lbl>
+            <Lbl icon="wallet">Recent Transactions<LiveDot /></Lbl>
           </div>
           {transactions.length === 0 ? (
             <div style={{ fontSize: 11, color: "#444456", textAlign: "center", padding: "20px 0" }}>
