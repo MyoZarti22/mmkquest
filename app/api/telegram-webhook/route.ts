@@ -10,7 +10,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 
 // ─── Send a message back to Telegram ─────────────────────────────────────────
 async function reply(chatId: number | string, text: string) {
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -19,6 +19,11 @@ async function reply(chatId: number | string, text: string) {
       parse_mode: "HTML",
     }),
   });
+  const data = await res.json();
+  if (!data.ok) {
+    console.error(`❌ Failed to send Telegram message to ${chatId}:`, data.description);
+  }
+  return data;
 }
 
 // ─── Find user in Firestore by telegramChatId ─────────────────────────────────

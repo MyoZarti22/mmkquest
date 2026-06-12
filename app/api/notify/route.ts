@@ -1,6 +1,6 @@
 // app/api/notify/route.ts
 // POST /api/notify
-// Sends Gmail notifications: budget_warning | transaction | xp_reward | streak
+// Sends Gmail & Telegram notifications: budget_warning | transaction | xp_reward | streak
 
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, adminAuth } from "@/lib/firebase-admin";
@@ -8,6 +8,27 @@ import {
   sendBudgetWarningEmail,
   sendTransactionEmail,
 } from "@/lib/nodemailer";
+
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+// ─── Send Telegram message ────────────────────────────────────────────────────
+async function sendTelegramMessage(chatId: string, text: string) {
+  if (!BOT_TOKEN) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: "HTML",
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -49,6 +70,12 @@ export async function POST(req: NextRequest) {
             data.emergency
           );
         }
+        if (user.telegramChatId && prefs.budgetTelegram !== false) {
+          await sendTelegramMessage(
+            user.telegramChatId,
+            `⚠️ <b>Budget Warning!</b>\n\n💸 Spent: <code>${data.spent.toLocaleString()} MMK</code>\n🎯 Goal: <code>${data.goal.toLocaleString()} MMK</code>\n🆘 Emergency: <code>${data.emergency.toLocaleString()} MMK</code>`
+          );
+        }
         break;
 
       case "transaction":
@@ -60,6 +87,30 @@ export async function POST(req: NextRequest) {
             data.amount,
             data.wallet,
             data.category
+          );
+        }
+        if (user.telegramChatId && prefs.transactionTelegram !== false) {
+          await sendTelegramMessage(
+            user.telegramChatId,
+            `💳 <b>Transaction</b>\n\n📝 ${data.txName}\n💰 <code>${data.amount.toLocaleString()} MMK</code>\n🏪 ${data.category}\n💼 ${data.wallet}`
+          );
+        }
+        break;
+
+      case "xp_reward":
+        if (user.telegramChatId) {
+          await sendTelegramMessage(
+            user.telegramChatId,
+            `⭐ <b>XP Reward!</b>\n\n+${data.xp} XP\n📊 Level ${data.level}`
+          );
+        }
+        break;
+
+      case "streak":
+        if (user.telegramChatId) {
+          await sendTelegramMessage(
+            user.telegramChatId,
+            `🔥 <b>Streak Milestone!</b>\n\n🎉 ${data.streak} day streak!\n💪 Keep it going!`
           );
         }
         break;

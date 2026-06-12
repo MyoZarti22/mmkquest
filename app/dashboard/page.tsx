@@ -4,8 +4,9 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { useTransactions, CAT_COLORS, CAT_ICONS } from "@/hooks/useTransactions";
-import { doc, updateDoc, getDoc, setDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { doc, updateDoc, getDoc, setDoc, collection, getDocs, writeBatch } from "firebase/firestore";
+import { updatePassword, reauthenticateWithCredential, EmailAuthProvider, deleteUser } from "firebase/auth";
+import { db, auth } from "@/lib/firebase";
 
 // ─── ICON ─────────────────────────────────────────────────────────────────────
 function Ic({ n, s = 14, c = "currentColor" }: { n: string; s?: number; c?: string }) {
@@ -73,9 +74,9 @@ const CARD: React.CSSProperties = { background: "#161619", border: "1px solid #2
 function Card({ children, style = {} }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return <div style={{ ...CARD, ...style }}>{children}</div>;
 }
-function Lbl({ icon, children }: { icon?: string; children: React.ReactNode }) {
+function Lbl({ icon, children, style }: { icon?: string; children: React.ReactNode; style?: React.CSSProperties }) {
   return (
-    <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".12em", textTransform: "uppercase", color: "#444456", marginBottom: 10, display: "flex", alignItems: "center", gap: 5 }}>
+    <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".12em", textTransform: "uppercase", color: "#444456", marginBottom: 10, display: "flex", alignItems: "center", gap: 5, ...style }}>
       {icon && <Ic n={icon} s={10} c="#444456" />}{children}
     </div>
   );
@@ -814,75 +815,176 @@ function AnalyticsScreen({ txData }: any) {
 }
 
 // ─── PROFILE SCREEN ───────────────────────────────────────────────────────────
-function ProfileScreen({ user, onLogout, updateUser }: any) {
-  const [ptab,      setPtab]    = useState("overview");
-  const [notifs,    setNotifs]  = useState({ budget: true, xp: true, streak: false, transactions: true, email: true });
-  const [twoFA,     setTwoFA]   = useState(false);
-  const [copied,    setCopied]  = useState(false);
+function ProfileScreen({ user, onLogout, updateUser, txData }: any) {
+  const [ptab,       setPtab]      = useState("overview");
+
+  // ── Overview state ───────────────────────────────────────────────────────────
+  const [editName,   setEditName]  = useState(false);
+  const [nameVal,    setNameVal]   = useState(user?.name || "");
+  const [nameSaving, setNameSave]  = useState(false);
+  const [nameSaved,  setNameSaved] = useState(false);
+
+  // ── Notifications state ──────────────────────────────────────────────────────
+  const [notifs, setNotifs] = useState({
+    budget: user?.notifs?.budget ?? true,
+    xp:     user?.notifs?.xp    ?? true,
+    streak: user?.notifs?.streak ?? false,
+    transactions: user?.notifs?.transactions ?? true,
+    email:  user?.notifs?.email  ?? true,
+  });
+  const [notifSaved, setNotifSaved] = useState(false);
+  const saveNotifs = async (next: typeof notifs) => {
+    setNotifs(next);
+    await updateUserProfile({ notifs: next });
+    setNotifSaved(true);
+    setTimeout(() => setNotifSaved(false), 2000);
+  };
+
+  // ── Telegram state ───────────────────────────────────────────────────────────
   const [tgChatId,  setTgId]    = useState(user?.telegramChatId || "");
   const [tgSaving,  setTgSave]  = useState(false);
   const [tgSaved,   setTgSaved] = useState(false);
+  const [copied,    setCopied]  = useState(false);
 
-  // ── Inline goal editing ──────────────────────────────────────────────────────
-  const [editGoal,  setEditGoal]  = useState(false);
-  const [editEmer,  setEditEmer]  = useState(false);
-  const [goalVal,   setGoalVal]   = useState(String(user?.goalBudget     || 175000));
-  const [emerVal,   setEmerVal]   = useState(String(user?.emergencyLimit || 225000));
-  const [goalSaving,setGoalSaving]= useState(false);
-  const [goalSaved, setGoalSaved] = useState(false);
+  // ── Settings / goals state ───────────────────────────────────────────────────
+  const [editGoal,   setEditGoal]   = useState(false);
+  const [editEmer,   setEditEmer]   = useState(false);
+  const [goalVal,    setGoalVal]    = useState(String(user?.goalBudget || 175000));
+  const [emerVal,    setEmerVal]    = useState(String(user?.emergencyLimit || 225000));
+  const [goalSaving, setGoalSaving] = useState(false);
+  const [goalSaved,  setGoalSaved]  = useState(false);
 
-  const saveGoalBudget = async () => {
-    setGoalSaving(true);
-    await updateUser({ goalBudget: Number(goalVal) });
-    setGoalSaving(false); setEditGoal(false); setGoalSaved(true);
-    setTimeout(() => setGoalSaved(false), 2000);
-  };
-
-  const saveEmerLimit = async () => {
-    setGoalSaving(true);
-    await updateUser({ emergencyLimit: Number(emerVal) });
-    setGoalSaving(false); setEditEmer(false); setGoalSaved(true);
-    setTimeout(() => setGoalSaved(false), 2000);
-  };
+  // ── Security state ───────────────────────────────────────────────────────────
+  const [showChangePw,   setShowChangePw]  = useState(false);
+  const [currentPw,      setCurrentPw]     = useState("");
+  const [newPw,          setNewPw]         = useState("");
+  const [confirmPw,      setConfirmPw]     = useState("");
+  const [pwSaving,       setPwSaving]      = useState(false);
+  const [pwMsg,          setPwMsg]         = useState({ text: "", ok: false });
+  const [twoFA,          setTwoFA]         = useState(false);
+  const [showDeleteConf, setShowDeleteConf]= useState(false);
+  const [deleteConfText, setDeleteConfText]= useState("");
+  const [deletePw,       setDeletePw]      = useState("");
+  const [deleting,       setDeleting]      = useState(false);
+  const [showResetConf,  setShowResetConf] = useState(false);
+  const [resetting,      setResetting]     = useState(false);
 
   const PTABS = ["overview", "notifications", "telegram", "settings", "security"];
 
+  // ── Save display name ────────────────────────────────────────────────────────
+  const saveName = async () => {
+    if (!nameVal.trim()) return;
+    setNameSave(true);
+    await updateUserProfile({ name: nameVal.trim() });
+    setNameSave(false); setEditName(false); setNameSaved(true);
+    setTimeout(() => setNameSaved(false), 2000);
+  };
+
+  // ── Telegram ─────────────────────────────────────────────────────────────────
   const copyBotLink = () => {
-    navigator.clipboard.writeText("https://t.me/MMKQuestBot?start=" + user?.uid);
+    navigator.clipboard.writeText("https://t.me/MMKQuestBot");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ── Telegram: call Bot API directly from browser ─────────────────────────────
   const saveTelegramId = async () => {
     if (!tgChatId.trim()) return;
     setTgSave(true);
+    await updateUserProfile({ telegramChatId: tgChatId.trim() });
     try {
-      // Save Chat ID to Firestore first
-      await updateUser({ telegramChatId: tgChatId.trim() });
-
-      // Call our API route which calls Telegram
-      const res = await fetch("/api/telegram", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
+      await fetch("/api/telegram", {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chatId: tgChatId.trim(), type: "test", data: {} }),
       });
+    } catch {}
+    setTgSave(false); setTgSaved(true);
+    setTimeout(() => setTgSaved(false), 3000);
+  };
 
-      if (res.ok) {
-        setTgSaved(true);
-        setTimeout(() => setTgSaved(false), 3000);
-      } else {
-        // If server route fails (e.g. no BOT_TOKEN yet), still show saved
-        // since the Chat ID was saved to Firestore successfully
-        setTgSaved(true);
-        setTimeout(() => setTgSaved(false), 3000);
-      }
+  // ── Goals ────────────────────────────────────────────────────────────────────
+  const saveGoalBudget = async () => {
+    setGoalSaving(true);
+    await updateUserProfile({ goalBudget: Number(goalVal) });
+    setGoalSaving(false); setEditGoal(false); setGoalSaved(true);
+    setTimeout(() => setGoalSaved(false), 2000);
+  };
+  const saveEmerLimit = async () => {
+    setGoalSaving(true);
+    await updateUserProfile({ emergencyLimit: Number(emerVal) });
+    setGoalSaving(false); setEditEmer(false); setGoalSaved(true);
+    setTimeout(() => setGoalSaved(false), 2000);
+  };
+
+  // ── Export CSV ───────────────────────────────────────────────────────────────
+  const exportCSV = () => {
+    const txs = txData?.transactions || [];
+    if (txs.length === 0) { alert("No transactions to export yet."); return; }
+    const rows = [
+      ["Date", "Name", "Category", "Wallet", "Type", "Amount (MMK)"],
+      ...txs.map((t: any) => [
+        new Date(t.timestamp).toLocaleDateString(),
+        t.name, t.category, t.wallet, t.type, t.amount,
+      ]),
+    ];
+    const csv  = rows.map((r) => r.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `mmkquest-transactions-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  // ── Change password ──────────────────────────────────────────────────────────
+  const changePassword = async () => {
+    setPwMsg({ text: "", ok: false });
+    if (newPw.length < 6)      { setPwMsg({ text: "New password must be at least 6 characters", ok: false }); return; }
+    if (newPw !== confirmPw)   { setPwMsg({ text: "Passwords do not match", ok: false }); return; }
+    setPwSaving(true);
+    try {
+      const firebaseUser = auth.currentUser;
+      if (!firebaseUser || !firebaseUser.email) throw new Error("Not logged in");
+      const cred = EmailAuthProvider.credential(firebaseUser.email, currentPw);
+      await reauthenticateWithCredential(firebaseUser, cred);
+      await updatePassword(firebaseUser, newPw);
+      setPwMsg({ text: "Password changed successfully!", ok: true });
+      setCurrentPw(""); setNewPw(""); setConfirmPw("");
+      setTimeout(() => setShowChangePw(false), 2000);
     } catch (e: any) {
-      // Even if fetch fails, Chat ID is saved — just show a helpful message
-      setTgSaved(true);
-      setTimeout(() => setTgSaved(false), 3000);
-    } finally {
-      setTgSave(false);
+      const msg = e.code === "auth/wrong-password" ? "Current password is incorrect"
+                : e.code === "auth/too-many-requests" ? "Too many attempts, try again later"
+                : e.message;
+      setPwMsg({ text: msg, ok: false });
+    } finally { setPwSaving(false); }
+  };
+
+  // ── Reset XP ─────────────────────────────────────────────────────────────────
+  const resetXP = async () => {
+    setResetting(true);
+    await updateUserProfile({ xp: 0, level: 1, streak: 0, rank: "Bronze I", healthScore: 50 });
+    setResetting(false); setShowResetConf(false);
+    alert("XP and progress reset to zero.");
+  };
+
+  // ── Delete account ────────────────────────────────────────────────────────────
+  const deleteAccount = async () => {
+    if (deleteConfText !== "DELETE") { alert('Type DELETE to confirm'); return; }
+    setDeleting(true);
+    try {
+      const firebaseUser = auth.currentUser;
+      if (!firebaseUser || !firebaseUser.email) throw new Error("Not logged in");
+      const cred = EmailAuthProvider.credential(firebaseUser.email, deletePw);
+      await reauthenticateWithCredential(firebaseUser, cred);
+      // Delete all transactions
+      const txSnap = await getDocs(collection(db, "transactions"));
+      const batch  = writeBatch(db);
+      txSnap.docs.forEach((d) => { if (d.data().userId === user.uid) batch.delete(d.ref); });
+      batch.delete(doc(db, "users", user.uid));
+      await batch.commit();
+      await deleteUser(firebaseUser);
+      onLogout();
+    } catch (e: any) {
+      setDeleting(false);
+      alert(e.code === "auth/wrong-password" ? "Wrong password" : e.message);
     }
   };
 
@@ -896,9 +998,7 @@ function ProfileScreen({ user, onLogout, updateUser }: any) {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 18, fontWeight: 700 }}>{user?.name || "User"}</div>
-            <div style={{ fontSize: 11, color: "#a855f7", fontWeight: 600, marginTop: 2, fontFamily: "monospace" }}>
-              {user?.rank || "Bronze I"}
-            </div>
+            <div style={{ fontSize: 11, color: "#a855f7", fontWeight: 600, marginTop: 2, fontFamily: "monospace" }}>{user?.rank || "Bronze I"}</div>
             <div style={{ fontSize: 10, color: "#444456", marginTop: 2 }}>{user?.email}</div>
           </div>
           <button onClick={onLogout} style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "1px solid #2e2e35", borderRadius: 8, padding: "7px 12px", fontSize: 11, fontWeight: 600, color: "#ef4444", cursor: "pointer", fontFamily: "inherit" }}>
@@ -907,10 +1007,10 @@ function ProfileScreen({ user, onLogout, updateUser }: any) {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 14 }}>
           {[
-            { val: String(user?.level  || 1), lbl: "Level",  color: "#f0f0f5" },
-            { val: String(user?.streak || 0), lbl: "Streak", color: "#f59e0b" },
-            { val: String(user?.xp     || 0), lbl: "XP",     color: "#a855f7" },
-            { val: user?.rank || "—",         lbl: "Rank",   color: "#22c55e" },
+            { val: String(user?.level  || 1),  lbl: "Level",  color: "#f0f0f5" },
+            { val: String(user?.streak || 0),  lbl: "Streak", color: "#f59e0b" },
+            { val: String(user?.xp     || 0),  lbl: "XP",     color: "#a855f7" },
+            { val: user?.rank || "—",          lbl: "Rank",   color: "#22c55e" },
           ].map((s) => (
             <div key={s.lbl} style={{ background: "#111114", border: "1px solid #242428", borderRadius: 8, padding: "9px 10px", textAlign: "center" }}>
               <div style={{ fontFamily: "monospace", fontSize: s.lbl === "Rank" ? 10 : 17, fontWeight: 700, color: s.color, lineHeight: 1 }}>{s.val}</div>
@@ -927,7 +1027,7 @@ function ProfileScreen({ user, onLogout, updateUser }: any) {
         </div>
       </div>
 
-      {/* Profile tabs */}
+      {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "1px solid #242428", marginBottom: 14, overflowX: "auto" }}>
         {PTABS.map((t) => (
           <button key={t} onClick={() => setPtab(t)} style={{ padding: "9px 14px", fontSize: 10, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", color: ptab === t ? "#f0f0f5" : "#444456", cursor: "pointer", background: "none", border: "none", borderBottom: `1.5px solid ${ptab === t ? "#22c55e" : "transparent"}`, fontFamily: "inherit", marginBottom: -1, whiteSpace: "nowrap" }}>
@@ -936,109 +1036,134 @@ function ProfileScreen({ user, onLogout, updateUser }: any) {
         ))}
       </div>
 
-      {/* OVERVIEW */}
+      {/* ── OVERVIEW ── */}
       {ptab === "overview" && (
         <Sec title="Account Details">
-          <SRow icon="user"   iconColor="#3b82f6" iconBg="rgba(59,130,246,.1)"  name={user?.name  || "User"}   desc="Display name"    right={<Ic n="chevron" s={12} c="#444456" />} />
-          <SRow icon="mail"   iconColor="#a855f7" iconBg="rgba(168,85,247,.1)"  name={user?.email || "—"}      desc="Email · Verified" right={<Ic n="chevron" s={12} c="#444456" />} />
-          <SRow icon="dollar" iconColor="#22c55e" iconBg="rgba(34,197,94,.1)"   name="Myanmar Kyat (MMK)"     desc="Default currency"  right={<span style={{ fontSize: 10, color: "#444456" }}>MMK</span>} />
+          {/* Editable name */}
+          <div style={{ padding: "12px 15px", borderBottom: "1px solid #242428" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: editName ? 10 : 0 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(59,130,246,.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="user" s={14} c="#3b82f6" /></div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{user?.name || "User"}</div>
+                <div style={{ fontSize: 10, color: "#444456", marginTop: 1 }}>Display name</div>
+              </div>
+              {!editName ? (
+                <button onClick={() => { setEditName(true); setNameVal(user?.name || ""); }}
+                  style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "5px 10px", fontSize: 11, color: "#3b82f6", cursor: "pointer", fontFamily: "inherit" }}>
+                  <Ic n="edit" s={11} c="#3b82f6" /> Edit
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setEditName(false)} style={{ background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "5px 10px", fontSize: 11, color: "#444456", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                  <button onClick={saveName} disabled={nameSaving} style={{ background: "#3b82f6", border: "none", borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>{nameSaving ? "Saving…" : "Save"}</button>
+                </div>
+              )}
+            </div>
+            {editName && (
+              <div style={{ marginLeft: 44 }}>
+                <input value={nameVal} onChange={(e) => setNameVal(e.target.value)} autoFocus
+                  onKeyDown={(e) => e.key === "Enter" && saveName()}
+                  style={{ width: "100%", background: "#0a0a0c", border: "1px solid rgba(59,130,246,.4)", borderRadius: 8, padding: "9px 12px", fontSize: 14, fontWeight: 600, color: "#f0f0f5", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+              </div>
+            )}
+            {nameSaved && <div style={{ fontSize: 10, color: "#22c55e", marginTop: 4, marginLeft: 44, display: "flex", alignItems: "center", gap: 4 }}><Ic n="check" s={10} c="#22c55e" /> Name updated!</div>}
+          </div>
+          <SRow icon="mail" iconColor="#a855f7" iconBg="rgba(168,85,247,.1)" name={user?.email || "—"} desc="Email · Verified" right={<span style={{ fontSize: 10, color: "#22c55e", fontWeight: 600 }}>Verified</span>} />
+          <SRow icon="dollar" iconColor="#22c55e" iconBg="rgba(34,197,94,.1)" name="Myanmar Kyat (MMK)" desc="Default currency" right={<span style={{ fontSize: 10, color: "#444456" }}>MMK</span>} />
+          <SRow icon="calendar" name="Member Since" desc="Account creation date" right={<span style={{ fontSize: 10, fontFamily: "monospace", color: "#444456" }}>{user?.createdAt ? new Date(user.createdAt?.seconds * 1000).toLocaleDateString() : "—"}</span>} />
         </Sec>
       )}
 
-      {/* NOTIFICATIONS */}
+      {/* ── NOTIFICATIONS ── */}
       {ptab === "notifications" && (
         <>
+          {notifSaved && <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#22c55e", fontWeight: 600, marginBottom: 10, padding: "8px 12px", background: "rgba(34,197,94,.08)", border: "1px solid rgba(34,197,94,.2)", borderRadius: 8 }}><Ic n="check" s={12} c="#22c55e" /> Notification settings saved!</div>}
           <Sec title="Email Notifications (Gmail)">
-            <SRow icon="bell"   iconColor="#22c55e" iconBg="rgba(34,197,94,.1)"  name="Budget Warnings"     desc="Alert at 80% of goal"         right={<Toggle on={notifs.budget}       onToggle={() => setNotifs((n) => ({ ...n, budget:       !n.budget       }))} />} />
-            <SRow icon="star"   iconColor="#a855f7" iconBg="rgba(168,85,247,.1)" name="XP Rewards"          desc="Notify when XP earned"         right={<Toggle on={notifs.xp}           onToggle={() => setNotifs((n) => ({ ...n, xp:           !n.xp           }))} />} />
-            <SRow icon="zap"    iconColor="#f59e0b" iconBg="rgba(245,158,11,.1)" name="Streak Reminders"    desc="Daily login reminder"          right={<Toggle on={notifs.streak}       onToggle={() => setNotifs((n) => ({ ...n, streak:       !n.streak       }))} />} />
-            <SRow icon="wallet"                                                   name="Transaction Alerts"  desc="On every expense logged"       right={<Toggle on={notifs.transactions} onToggle={() => setNotifs((n) => ({ ...n, transactions: !n.transactions }))} />} />
+            <SRow icon="bell"   iconColor="#22c55e" iconBg="rgba(34,197,94,.1)"  name="Budget Warnings"    desc="Alert at 80% of goal"       right={<Toggle on={notifs.budget}       onToggle={() => saveNotifs({ ...notifs, budget:       !notifs.budget       })} />} />
+            <SRow icon="star"   iconColor="#a855f7" iconBg="rgba(168,85,247,.1)" name="XP Rewards"         desc="Notify when XP earned"      right={<Toggle on={notifs.xp}           onToggle={() => saveNotifs({ ...notifs, xp:           !notifs.xp           })} />} />
+            <SRow icon="zap"    iconColor="#f59e0b" iconBg="rgba(245,158,11,.1)" name="Streak Reminders"   desc="Daily login reminder"       right={<Toggle on={notifs.streak}       onToggle={() => saveNotifs({ ...notifs, streak:       !notifs.streak       })} />} />
+            <SRow icon="wallet"                                                   name="Transaction Alerts" desc="On every expense logged"    right={<Toggle on={notifs.transactions} onToggle={() => saveNotifs({ ...notifs, transactions: !notifs.transactions })} />} />
           </Sec>
           <Sec title="Notification Channels">
-            <SRow icon="mail"   name="Gmail Alerts"   desc={user?.email || "—"}                    right={<Toggle on={notifs.email} onToggle={() => setNotifs((n) => ({ ...n, email: !n.email }))} />} />
-            <SRow icon="send"   iconColor="#3b82f6" iconBg="rgba(59,130,246,.1)" name="Telegram Bot" desc="Set up in Telegram tab"             right={<><span style={{ fontSize: 10, color: user?.telegramChatId ? "#22c55e" : "#444456" }}>{user?.telegramChatId ? "Connected" : "Not connected"}</span><Ic n="chevron" s={12} c="#444456" /></>} onClick={() => setPtab("telegram")} />
+            <SRow icon="mail" name="Gmail Alerts" desc={user?.email || "—"} right={<Toggle on={notifs.email} onToggle={() => saveNotifs({ ...notifs, email: !notifs.email })} />} />
+            <SRow icon="send" iconColor="#3b82f6" iconBg="rgba(59,130,246,.1)" name="Telegram Bot" desc={user?.telegramChatId ? "Connected ✓" : "Set up in Telegram tab"} right={<><span style={{ fontSize: 10, color: user?.telegramChatId ? "#22c55e" : "#444456" }}>{user?.telegramChatId ? "Connected" : "Not set"}</span><Ic n="chevron" s={12} c="#444456" /></>} onClick={() => setPtab("telegram")} />
           </Sec>
         </>
       )}
 
-      {/* TELEGRAM BOT — real setup */}
+      {/* ── TELEGRAM ── */}
       {ptab === "telegram" && (
-        <>
-          <Sec title="Connect Telegram Bot">
-            <div style={{ padding: "16px 15px" }}>
-              <div style={{ background: "rgba(59,130,246,.06)", border: "1px solid rgba(59,130,246,.2)", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#3b82f6", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                  <Ic n="send" s={14} c="#3b82f6" /> @MMKQuestBot
-                </div>
-                <div style={{ fontSize: 11, color: "#8888a0", lineHeight: 1.7 }}>
-                  Connect your Telegram account to receive real-time notifications for budget alerts, XP rewards, and transaction confirmations directly in Telegram.
-                </div>
-              </div>
+        <Sec title="Connect Telegram Bot">
+          <div style={{ padding: "16px 15px" }}>
+            <div style={{ background: "rgba(59,130,246,.06)", border: "1px solid rgba(59,130,246,.2)", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#3b82f6", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}><Ic n="send" s={14} c="#3b82f6" /> @MMKQuestBot</div>
+              <div style={{ fontSize: 11, color: "#8888a0", lineHeight: 1.7 }}>Get real-time notifications for budget alerts, XP rewards, and transaction alerts directly in Telegram.</div>
+            </div>
 
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#f0f0f5", marginBottom: 10 }}>Setup Steps:</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#f0f0f5", marginBottom: 10 }}>Setup Steps:</div>
+            {[
+              "Open Telegram and search for @MMKQuestBot",
+              "Press START or send /start to the bot",
+              "The bot will reply with your Chat ID number",
+              "Paste your Chat ID below and click Save",
+            ].map((text, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(59,130,246,.15)", border: "1px solid rgba(59,130,246,.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#3b82f6" }}>{i + 1}</div>
+                <div style={{ fontSize: 12, color: "#8888a0", paddingTop: 3, lineHeight: 1.5 }}>{text}</div>
+              </div>
+            ))}
+
+            <button onClick={copyBotLink} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.3)", borderRadius: 8, padding: "10px", fontSize: 12, fontWeight: 600, color: "#3b82f6", cursor: "pointer", fontFamily: "inherit", marginBottom: 14 }}>
+              <Ic n={copied ? "check" : "link"} s={13} c={copied ? "#22c55e" : "#3b82f6"} />
+              {copied ? "Link Copied!" : "Copy Bot Link to Share"}
+            </button>
+
+            <label style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: "#444456", marginBottom: 6, display: "block" }}>Your Telegram Chat ID</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input value={tgChatId} onChange={(e) => setTgId(e.target.value)} placeholder="e.g. 123456789"
+                style={{ flex: 1, background: "#0a0a0c", border: "1px solid #2e2e35", borderRadius: 8, padding: "10px 12px", fontSize: 13, fontWeight: 600, color: "#f0f0f5", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
+              <button onClick={saveTelegramId} disabled={tgSaving}
+                style={{ background: tgSaved ? "rgba(34,197,94,.1)" : "#22c55e", border: tgSaved ? "1px solid rgba(34,197,94,.3)" : "none", borderRadius: 8, padding: "10px 16px", fontSize: 12, fontWeight: 700, color: tgSaved ? "#22c55e" : "#000", cursor: tgSaving ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                {tgSaving ? "Saving…" : tgSaved ? "Saved! ✓" : "Save"}
+              </button>
+            </div>
+
+            {user?.telegramChatId && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#22c55e", fontWeight: 600, marginBottom: 14 }}>
+                <Ic n="check" s={12} c="#22c55e" /> Connected — Chat ID: <span style={{ fontFamily: "monospace" }}>{user.telegramChatId}</span>
+              </div>
+            )}
+
+            <div style={{ padding: "12px 14px", background: "#111114", border: "1px solid #242428", borderRadius: 8 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: "#444456", marginBottom: 10 }}>Available Bot Commands</div>
               {[
-                { step: 1, text: "Open Telegram and search for @MMKQuestBot", action: null },
-                { step: 2, text: "Press START or send /start to the bot", action: null },
-                { step: 3, text: "The bot will send you a Chat ID number like: 123456789", action: null },
-                { step: 4, text: "Paste your Chat ID below and save", action: null },
-              ].map((s) => (
-                <div key={s.step} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
-                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(59,130,246,.15)", border: "1px solid rgba(59,130,246,.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#3b82f6" }}>{s.step}</div>
-                  <div style={{ fontSize: 12, color: "#8888a0", paddingTop: 3, lineHeight: 1.5 }}>{s.text}</div>
+                { cmd: "/start",   desc: "Get your Chat ID" },
+                { cmd: "/balance", desc: "Check wallet balances" },
+                { cmd: "/spent",   desc: "Monthly spending summary" },
+                { cmd: "/budget",  desc: "Budget progress + zone" },
+                { cmd: "/xp",      desc: "Your XP and level" },
+                { cmd: "/rank",    desc: "Your saver rank" },
+                { cmd: "/help",    desc: "Show all commands" },
+              ].map((c, i, arr) => (
+                <div key={c.cmd} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < arr.length - 1 ? "1px solid #242428" : "none", alignItems: "center" }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#3b82f6", fontWeight: 600 }}>{c.cmd}</span>
+                  <span style={{ fontSize: 11, color: "#444456" }}>{c.desc}</span>
                 </div>
               ))}
-
-              <button onClick={copyBotLink} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.3)", borderRadius: 8, padding: "10px", fontSize: 12, fontWeight: 600, color: "#3b82f6", cursor: "pointer", fontFamily: "inherit", marginBottom: 14 }}>
-                <Ic n={copied ? "check" : "link"} s={13} c={copied ? "#22c55e" : "#3b82f6"} />
-                {copied ? "Link Copied!" : "Copy Bot Link to Share"}
-              </button>
-
-              <label style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: "#444456", marginBottom: 6, display: "block" }}>Your Telegram Chat ID</label>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input value={tgChatId} onChange={(e) => setTgId(e.target.value)} placeholder="e.g. 123456789"
-                  style={{ flex: 1, background: "#0a0a0c", border: "1px solid #2e2e35", borderRadius: 8, padding: "10px 12px", fontSize: 13, fontWeight: 600, color: "#f0f0f5", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
-                <button onClick={saveTelegramId} disabled={tgSaving}
-                  style={{ background: tgSaved ? "rgba(34,197,94,.1)" : "#22c55e", border: tgSaved ? "1px solid rgba(34,197,94,.3)" : "none", borderRadius: 8, padding: "10px 16px", fontSize: 12, fontWeight: 700, color: tgSaved ? "#22c55e" : "#000", cursor: tgSaving ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
-                  {tgSaving ? <Spinner /> : tgSaved ? <><Ic n="check" s={12} c="#22c55e" /> Saved!</> : "Save"}
-                </button>
-              </div>
-              {user?.telegramChatId && (
-                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#22c55e", fontWeight: 600 }}>
-                  <Ic n="check" s={12} c="#22c55e" /> Telegram connected — Chat ID: {user.telegramChatId}
-                </div>
-              )}
-
-              <div style={{ marginTop: 16, padding: "12px 14px", background: "#111114", border: "1px solid #242428", borderRadius: 8 }}>
-                <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: "#444456", marginBottom: 8 }}>Bot Commands</div>
-                {[
-                  { cmd: "/balance", desc: "Check your wallet balances" },
-                  { cmd: "/spent",   desc: "See monthly spending summary" },
-                  { cmd: "/xp",      desc: "Check your XP and level" },
-                  { cmd: "/alert",   desc: "Toggle budget alerts" },
-                ].map((c) => (
-                  <div key={c.cmd} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #242428", alignItems: "center" }}>
-                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#3b82f6", fontWeight: 600 }}>{c.cmd}</span>
-                    <span style={{ fontSize: 11, color: "#444456" }}>{c.desc}</span>
-                  </div>
-                ))}
-              </div>
             </div>
-          </Sec>
-        </>
+          </div>
+        </Sec>
       )}
 
-      {/* SETTINGS */}
+      {/* ── SETTINGS ── */}
       {ptab === "settings" && (
         <>
           <Sec title="Budget Goals">
-            {/* Monthly Goal — click to edit inline */}
             <div style={{ padding: "12px 15px", borderBottom: "1px solid #242428" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: editGoal ? 10 : 0 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(34,197,94,.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Ic n="target" s={14} c="#22c55e" />
-                </div>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(34,197,94,.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="target" s={14} c="#22c55e" /></div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#f0f0f5" }}>Monthly Goal</div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>Monthly Goal</div>
                   <div style={{ fontSize: 10, color: "#444456", marginTop: 1 }}>Ideal spending target</div>
                 </div>
                 {!editGoal ? (
@@ -1048,35 +1173,27 @@ function ProfileScreen({ user, onLogout, updateUser }: any) {
                     <Ic n="edit" s={11} c="#22c55e" />
                   </button>
                 ) : (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={() => setEditGoal(false)} style={{ background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "5px 10px", fontSize: 11, color: "#444456", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                    <button onClick={saveGoalBudget} disabled={goalSaving}
-                      style={{ background: "#22c55e", border: "none", borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#000", cursor: "pointer", fontFamily: "inherit" }}>
-                      {goalSaving ? "Saving…" : "Save"}
-                    </button>
+                    <button onClick={saveGoalBudget} disabled={goalSaving} style={{ background: "#22c55e", border: "none", borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#000", cursor: "pointer", fontFamily: "inherit" }}>{goalSaving ? "Saving…" : "Save"}</button>
                   </div>
                 )}
               </div>
               {editGoal && (
                 <div style={{ marginLeft: 44 }}>
-                  <input type="number" value={goalVal} onChange={(e) => setGoalVal(e.target.value)}
-                    autoFocus
-                    onKeyDown={(e) => e.key === "Enter" && saveGoalBudget()}
+                  <input type="number" value={goalVal} onChange={(e) => setGoalVal(e.target.value)} autoFocus onKeyDown={(e) => e.key === "Enter" && saveGoalBudget()}
                     style={{ width: "100%", background: "#0a0a0c", border: "1px solid rgba(34,197,94,.4)", borderRadius: 8, padding: "10px 12px", fontSize: 16, fontWeight: 700, color: "#22c55e", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
-                  <div style={{ fontSize: 10, color: "#444456", marginTop: 4 }}>Enter your ideal monthly spending in MMK. Press Enter to save.</div>
+                  <div style={{ fontSize: 10, color: "#444456", marginTop: 4 }}>Your ideal monthly spending. Press Enter to save.</div>
                 </div>
               )}
-              {goalSaved && !editGoal && <div style={{ fontSize: 10, color: "#22c55e", marginTop: 4, marginLeft: 44, display: "flex", alignItems: "center", gap: 4 }}><Ic n="check" s={10} c="#22c55e" /> Goal saved!</div>}
+              {goalSaved && !editGoal && <div style={{ fontSize: 10, color: "#22c55e", marginTop: 4, marginLeft: 44, display: "flex", alignItems: "center", gap: 4 }}><Ic n="check" s={10} c="#22c55e" /> Saved!</div>}
             </div>
 
-            {/* Emergency Limit — click to edit inline */}
             <div style={{ padding: "12px 15px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: editEmer ? 10 : 0 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(245,158,11,.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Ic n="warn" s={14} c="#f59e0b" />
-                </div>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(245,158,11,.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="warn" s={14} c="#f59e0b" /></div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#f0f0f5" }}>Emergency Limit</div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>Emergency Limit</div>
                   <div style={{ fontSize: 10, color: "#444456", marginTop: 1 }}>Max allowed to spend</div>
                 </div>
                 {!editEmer ? (
@@ -1086,57 +1203,127 @@ function ProfileScreen({ user, onLogout, updateUser }: any) {
                     <Ic n="edit" s={11} c="#f59e0b" />
                   </button>
                 ) : (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={() => setEditEmer(false)} style={{ background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "5px 10px", fontSize: 11, color: "#444456", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                    <button onClick={saveEmerLimit} disabled={goalSaving}
-                      style={{ background: "#f59e0b", border: "none", borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#000", cursor: "pointer", fontFamily: "inherit" }}>
-                      {goalSaving ? "Saving…" : "Save"}
-                    </button>
+                    <button onClick={saveEmerLimit} disabled={goalSaving} style={{ background: "#f59e0b", border: "none", borderRadius: 7, padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#000", cursor: "pointer", fontFamily: "inherit" }}>{goalSaving ? "Saving…" : "Save"}</button>
                   </div>
                 )}
               </div>
               {editEmer && (
                 <div style={{ marginLeft: 44 }}>
-                  <input type="number" value={emerVal} onChange={(e) => setEmerVal(e.target.value)}
-                    autoFocus
-                    onKeyDown={(e) => e.key === "Enter" && saveEmerLimit()}
+                  <input type="number" value={emerVal} onChange={(e) => setEmerVal(e.target.value)} autoFocus onKeyDown={(e) => e.key === "Enter" && saveEmerLimit()}
                     style={{ width: "100%", background: "#0a0a0c", border: "1px solid rgba(245,158,11,.4)", borderRadius: 8, padding: "10px 12px", fontSize: 16, fontWeight: 700, color: "#f59e0b", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
-                  <div style={{ fontSize: 10, color: "#444456", marginTop: 4 }}>Must be higher than your Goal Budget. Press Enter to save.</div>
+                  <div style={{ fontSize: 10, color: "#444456", marginTop: 4 }}>Must be higher than Goal Budget. Press Enter to save.</div>
                 </div>
               )}
             </div>
           </Sec>
+
           <Sec title="Data">
-            <SRow icon="download" name="Export Transactions" desc="Download as CSV" right={<Ic n="chevron" s={12} c="#444456" />} />
+            <div onClick={exportCSV} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 15px", cursor: "pointer" }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "#242428", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="download" s={14} c="#8888a0" /></div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>Export Transactions</div>
+                <div style={{ fontSize: 10, color: "#444456", marginTop: 1 }}>Download all transactions as CSV</div>
+              </div>
+              <Ic n="chevron" s={12} c="#444456" />
+            </div>
           </Sec>
         </>
       )}
 
-      {/* SECURITY */}
+      {/* ── SECURITY ── */}
       {ptab === "security" && (
         <>
           <Sec title="Authentication">
-            <SRow icon="lock"   iconColor="#22c55e" iconBg="rgba(34,197,94,.1)"  name="Change Password"  desc="Update your password"    right={<Ic n="chevron" s={12} c="#444456" />} />
-            <SRow icon="shield" iconColor="#f59e0b" iconBg="rgba(245,158,11,.1)" name="Two-Factor Auth"  desc="Extra security layer"    right={<Toggle on={twoFA} onToggle={() => setTwoFA(!twoFA)} />} />
-            <SRow icon="phone"  name="Active Sessions" desc="2 devices logged in" right={<><span style={{ fontSize: 10, fontFamily: "monospace", color: "#444456" }}>2</span><Ic n="chevron" s={12} c="#444456" /></>} />
+            {/* Change Password */}
+            <div style={{ padding: "12px 15px", borderBottom: "1px solid #242428" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: showChangePw ? 14 : 0 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(34,197,94,.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Ic n="lock" s={14} c="#22c55e" /></div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>Change Password</div>
+                  <div style={{ fontSize: 10, color: "#444456", marginTop: 1 }}>Update your account password</div>
+                </div>
+                <button onClick={() => { setShowChangePw(!showChangePw); setPwMsg({ text: "", ok: false }); }}
+                  style={{ background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "5px 10px", fontSize: 11, color: "#f0f0f5", cursor: "pointer", fontFamily: "inherit" }}>
+                  {showChangePw ? "Cancel" : "Change"}
+                </button>
+              </div>
+              {showChangePw && (
+                <div style={{ marginLeft: 44, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {[
+                    { label: "Current Password", val: currentPw, set: setCurrentPw },
+                    { label: "New Password",      val: newPw,     set: setNewPw     },
+                    { label: "Confirm Password",  val: confirmPw, set: setConfirmPw },
+                  ].map((f) => (
+                    <div key={f.label}>
+                      <label style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", color: "#444456", marginBottom: 4, display: "block" }}>{f.label}</label>
+                      <input type="password" value={f.val} onChange={(e) => f.set(e.target.value)}
+                        style={{ width: "100%", background: "#0a0a0c", border: "1px solid #2e2e35", borderRadius: 7, padding: "9px 11px", fontSize: 13, color: "#f0f0f5", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+                    </div>
+                  ))}
+                  {pwMsg.text && <div style={{ fontSize: 11, color: pwMsg.ok ? "#22c55e" : "#ef4444", display: "flex", alignItems: "center", gap: 5 }}><Ic n={pwMsg.ok ? "check" : "warn"} s={11} c={pwMsg.ok ? "#22c55e" : "#ef4444"} />{pwMsg.text}</div>}
+                  <button onClick={changePassword} disabled={pwSaving}
+                    style={{ background: "#22c55e", border: "none", borderRadius: 8, padding: "10px", fontSize: 12, fontWeight: 700, color: "#000", cursor: pwSaving ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: pwSaving ? .7 : 1 }}>
+                    {pwSaving ? "Changing…" : "Update Password"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <SRow icon="shield" iconColor="#f59e0b" iconBg="rgba(245,158,11,.1)" name="Two-Factor Auth" desc="Extra security layer (coming soon)" right={<Toggle on={twoFA} onToggle={() => setTwoFA(!twoFA)} />} />
           </Sec>
+
           <Sec title="Danger Zone" danger>
-            {[
-              { icon: "refresh", label: "Reset all XP and progress"    },
-              { icon: "trash",   label: "Delete all transaction data"   },
-              { icon: "logout",  label: "Delete account permanently"    },
-            ].map((d, i, arr) => (
-              <button key={d.label} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "12px 15px", background: "none", border: "none", borderBottom: i < arr.length - 1 ? "1px solid #242428" : "none", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500, color: "#ef4444", textAlign: "left" }}>
-                <Ic n={d.icon} s={13} c="#ef4444" /> {d.label}
-              </button>
-            ))}
+            {/* Reset XP */}
+            <div style={{ padding: "12px 15px", borderBottom: "1px solid #242428" }}>
+              {!showResetConf ? (
+                <button onClick={() => setShowResetConf(true)} style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500, color: "#ef4444", width: "100%", padding: 0 }}>
+                  <Ic n="refresh" s={13} c="#ef4444" /> Reset all XP and progress
+                </button>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 10, fontWeight: 600 }}>This will reset your level, XP, streak, and rank to zero. Are you sure?</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setShowResetConf(false)} style={{ flex: 1, background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "8px", fontSize: 12, color: "#444456", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                    <button onClick={resetXP} disabled={resetting} style={{ flex: 1, background: "#ef4444", border: "none", borderRadius: 7, padding: "8px", fontSize: 12, fontWeight: 700, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>{resetting ? "Resetting…" : "Yes, Reset"}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Delete Account */}
+            <div style={{ padding: "12px 15px" }}>
+              {!showDeleteConf ? (
+                <button onClick={() => setShowDeleteConf(true)} style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 500, color: "#ef4444", width: "100%", padding: 0 }}>
+                  <Ic n="trash" s={13} c="#ef4444" /> Delete account permanently
+                </button>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 12, color: "#ef4444", fontWeight: 600 }}>This is permanent. All data will be deleted.</div>
+                  <div>
+                    <label style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", color: "#444456", marginBottom: 4, display: "block" }}>Type DELETE to confirm</label>
+                    <input value={deleteConfText} onChange={(e) => setDeleteConfText(e.target.value)} placeholder="DELETE"
+                      style={{ width: "100%", background: "#0a0a0c", border: "1px solid #ef4444", borderRadius: 7, padding: "9px 11px", fontSize: 13, color: "#ef4444", fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", color: "#444456", marginBottom: 4, display: "block" }}>Your Password</label>
+                    <input type="password" value={deletePw} onChange={(e) => setDeletePw(e.target.value)}
+                      style={{ width: "100%", background: "#0a0a0c", border: "1px solid #2e2e35", borderRadius: 7, padding: "9px 11px", fontSize: 13, color: "#f0f0f5", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => { setShowDeleteConf(false); setDeleteConfText(""); setDeletePw(""); }} style={{ flex: 1, background: "none", border: "1px solid #2e2e35", borderRadius: 7, padding: "8px", fontSize: 12, color: "#444456", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                    <button onClick={deleteAccount} disabled={deleting || deleteConfText !== "DELETE"} style={{ flex: 1, background: "#ef4444", border: "none", borderRadius: 7, padding: "8px", fontSize: 12, fontWeight: 700, color: "#fff", cursor: "pointer", fontFamily: "inherit", opacity: deleteConfText !== "DELETE" ? .4 : 1 }}>{deleting ? "Deleting…" : "Delete Forever"}</button>
+                  </div>
+                </div>
+              )}
+            </div>
           </Sec>
         </>
       )}
     </div>
   );
 }
-
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "home",      label: "Home",      icon: "home"      },
@@ -1261,7 +1448,7 @@ export default function DashboardPage() {
         {tab === "goals"     && <GoalsScreen     user={user} txData={txData} updateUser={updateUserProfile} />}
         {tab === "game"      && <GameScreen      user={user} />}
         {tab === "analytics" && <AnalyticsScreen txData={txData} />}
-        {tab === "profile"   && <ProfileScreen   user={user} onLogout={handleLogout} updateUser={updateUserProfile} />}
+        {tab === "profile"   && <ProfileScreen   user={user} onLogout={handleLogout} updateUser={updateUserProfile} txData={txData} />}
       </div>
 
       <AddSpendModal open={modal} onClose={() => setModal(false)} onAdd={handleAdd} walletBalances={walletBalances} />
