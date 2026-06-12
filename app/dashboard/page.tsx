@@ -1338,6 +1338,8 @@ const TABS = [
 export default function DashboardPage() {
   const router = useRouter();
   const { user, loading, logout, updateUserProfile } = useAuth();
+  // Alias for backward-compatible local calls in this component
+  const updateUser = updateUserProfile;
   const txData  = useTransactions(user);
   const [tab,             setTab]    = useState("home");
   const [modal,           setModal]  = useState(false);
@@ -1456,6 +1458,4 @@ export default function DashboardPage() {
   );
 }
 
-function updateUser(arg0: { telegramChatId: any; }) {
-  throw new Error("Function not implemented.");
-}
+// (removed stray stub) - `updateUser` now aliases `updateUserProfile` from `useAuth`
