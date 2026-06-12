@@ -835,7 +835,7 @@ function ProfileScreen({ user, onLogout, updateUser, txData }: any) {
   const [notifSaved, setNotifSaved] = useState(false);
   const saveNotifs = async (next: typeof notifs) => {
     setNotifs(next);
-    await updateUserProfile({ notifs: next });
+    await updateUser({ notifs: next });
     setNotifSaved(true);
     setTimeout(() => setNotifSaved(false), 2000);
   };
@@ -875,7 +875,7 @@ function ProfileScreen({ user, onLogout, updateUser, txData }: any) {
   const saveName = async () => {
     if (!nameVal.trim()) return;
     setNameSave(true);
-    await updateUserProfile({ name: nameVal.trim() });
+    await updateUser({ name: nameVal.trim() });
     setNameSave(false); setEditName(false); setNameSaved(true);
     setTimeout(() => setNameSaved(false), 2000);
   };
@@ -890,7 +890,7 @@ function ProfileScreen({ user, onLogout, updateUser, txData }: any) {
   const saveTelegramId = async () => {
     if (!tgChatId.trim()) return;
     setTgSave(true);
-    await updateUserProfile({ telegramChatId: tgChatId.trim() });
+    await updateUser({ telegramChatId: tgChatId.trim() });
     try {
       await fetch("/api/telegram", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -904,13 +904,13 @@ function ProfileScreen({ user, onLogout, updateUser, txData }: any) {
   // ── Goals ────────────────────────────────────────────────────────────────────
   const saveGoalBudget = async () => {
     setGoalSaving(true);
-    await updateUserProfile({ goalBudget: Number(goalVal) });
+    await updateUser({ goalBudget: Number(goalVal) });
     setGoalSaving(false); setEditGoal(false); setGoalSaved(true);
     setTimeout(() => setGoalSaved(false), 2000);
   };
   const saveEmerLimit = async () => {
     setGoalSaving(true);
-    await updateUserProfile({ emergencyLimit: Number(emerVal) });
+    await updateUser({ emergencyLimit: Number(emerVal) });
     setGoalSaving(false); setEditEmer(false); setGoalSaved(true);
     setTimeout(() => setGoalSaved(false), 2000);
   };
@@ -960,7 +960,7 @@ function ProfileScreen({ user, onLogout, updateUser, txData }: any) {
   // ── Reset XP ─────────────────────────────────────────────────────────────────
   const resetXP = async () => {
     setResetting(true);
-    await updateUserProfile({ xp: 0, level: 1, streak: 0, rank: "Bronze I", healthScore: 50 });
+    await updateUser({ xp: 0, level: 1, streak: 0, rank: "Bronze I", healthScore: 50 });
     setResetting(false); setShowResetConf(false);
     alert("XP and progress reset to zero.");
   };
@@ -1454,4 +1454,8 @@ export default function DashboardPage() {
       <AddSpendModal open={modal} onClose={() => setModal(false)} onAdd={handleAdd} walletBalances={walletBalances} />
     </div>
   );
+}
+
+function updateUser(arg0: { telegramChatId: any; }) {
+  throw new Error("Function not implemented.");
 }
