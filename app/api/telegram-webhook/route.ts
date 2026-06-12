@@ -1,7 +1,4 @@
 // app/api/telegram-webhook/route.ts
-// This receives ALL messages sent to your bot
-// Telegram calls this URL whenever someone messages the bot
-// You must register this webhook URL with Telegram (see setup below)
 
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
@@ -27,17 +24,40 @@ async function reply(chatId: number | string, text: string) {
 }
 
 // ─── Find user in Firestore by telegramChatId ─────────────────────────────────
+// FIX: tries both string AND number forms of chatId, logs errors instead of swallowing them
 async function findUserByChatId(chatId: string) {
   try {
-    const snap = await adminDb
+    // Try string match first (how the app saves it via tgChatId.trim())
+    let snap = await adminDb
       .collection("users")
       .where("telegramChatId", "==", chatId)
       .limit(1)
       .get();
-    if (snap.empty) return null;
-    const doc = snap.docs[0];
-    return { uid: doc.id, ...doc.data() } as any;
-  } catch {
+
+    // If not found as string, try as number (in case it was saved as a number)
+    if (snap.empty) {
+      const chatIdNum = Number(chatId);
+      if (!isNaN(chatIdNum)) {
+        snap = await adminDb
+          .collection("users")
+          .where("telegramChatId", "==", chatIdNum)
+          .limit(1)
+          .get();
+      }
+    }
+
+    if (snap.empty) {
+      console.log(`[MMKQuest] No user found for chatId: ${chatId}`);
+      return null;
+    }
+
+    const docSnap = snap.docs[0];
+    console.log(`[MMKQuest] Found user ${docSnap.id} for chatId: ${chatId}`);
+    return { uid: docSnap.id, ...docSnap.data() } as any;
+
+  } catch (err) {
+    // Log the REAL error so you can see it in Vercel logs
+    console.error(`[MMKQuest] findUserByChatId ERROR for chatId ${chatId}:`, err);
     return null;
   }
 }
@@ -55,7 +75,8 @@ async function getMonthTransactions(uid: string) {
     return snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as any))
       .filter((t: any) => t.timestamp >= start);
-  } catch {
+  } catch (err) {
+    console.error(`[MMKQuest] getMonthTransactions ERROR for uid ${uid}:`, err);
     return [];
   }
 }
@@ -65,7 +86,8 @@ async function getWalletBalances(uid: string) {
   try {
     const snap = await adminDb.collection("walletBalances").doc(uid).get();
     return snap.exists ? snap.data() as Record<string, number> : {};
-  } catch {
+  } catch (err) {
+    console.error(`[MMKQuest] getWalletBalances ERROR for uid ${uid}:`, err);
     return {};
   }
 }
@@ -80,6 +102,8 @@ export async function POST(req: NextRequest) {
     const chatId = String(msg.chat.id);
     const text   = (msg.text || "").trim();
     const from   = msg.from?.first_name || "there";
+
+    console.log(`[MMKQuest] Received "${text}" from chatId: ${chatId}`);
 
     // ── /start ─────────────────────────────────────────────────────────────────
     if (text === "/start" || text.startsWith("/start ")) {
@@ -120,7 +144,9 @@ Please:
 1. Open MMKQuest App
 2. Go to Profile → Telegram
 3. Paste this Chat ID: <code>${chatId}</code>
-4. Click Save`);
+4. Click Save
+
+⚠️ Make sure you click <b>Save</b> after entering the Chat ID.`);
       return NextResponse.json({ ok: true });
     }
 
@@ -170,7 +196,6 @@ ${lines || "  No balances set yet"}
       const totalExp = expenses.reduce((s: number, t: any) => s + Math.abs(t.amount), 0);
       const totalInc = income.reduce((s: number, t: any)   => s + t.amount, 0);
 
-      // Group by category
       const cats: Record<string, number> = {};
       expenses.forEach((t: any) => {
         cats[t.category] = (cats[t.category] || 0) + Math.abs(t.amount);
@@ -206,7 +231,6 @@ Total transactions: ${txs.length}`);
       const zone    = spent <= goal ? "✅ Perfect Save" : spent <= emerg ? "⚠️ Safe Zone" : "🚨 Exceeded";
       const xpEst   = spent <= goal ? 100 + Math.floor((goal - spent) / 1000) * 5 : spent <= emerg ? 40 : 0;
 
-      // ASCII progress bar
       const barLen  = 20;
       const filled  = Math.min(Math.round((spent / emerg) * barLen), barLen);
       const bar     = "█".repeat(filled) + "░".repeat(barLen - filled);
@@ -229,7 +253,6 @@ Projected XP: <b>+${xpEst} XP</b>`);
     if (text === "/xp") {
       const lvl    = user.level  || 1;
       const xp     = user.xp     || 0;
-      const xpNext = lvl * 100;
       const xpCurr = xp % 100;
       const barLen = 20;
       const filled = Math.round((xpCurr / 100) * barLen);
@@ -278,8 +301,7 @@ ${rank.includes("Gold") ? "💛 You're in the Gold tier! Keep saving!" : rank.in
     return NextResponse.json({ ok: true });
 
   } catch (error: any) {
-    console.error("Webhook error:", error);
-    // Always return 200 to Telegram so it doesn't retry
+    console.error("[MMKQuest] Webhook top-level error:", error);
     return NextResponse.json({ ok: true });
   }
 }
