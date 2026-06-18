@@ -28,28 +28,24 @@ async function sendTelegram(chatId: string, text: string) {
 }
 
 export async function GET(req: NextRequest) {
+  // Only Vercel cron or requests with the secret can trigger this
+  const authHeader = req.headers.get("authorization");
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const db   = getDb();
     const snap = await db.collection("users").get();
 
     let sent    = 0;
     let skipped = 0;
-    const log: any[] = [];
 
     for (const doc of snap.docs) {
       const user = doc.data();
 
-      if (!user.telegramChatId) {
-        log.push({ uid: doc.id, name: user.name, reason: "no telegramChatId" });
-        skipped++;
-        continue;
-      }
-
-      if (user.notifs?.streak === false) {
-        log.push({ uid: doc.id, name: user.name, reason: "streak notif disabled" });
-        skipped++;
-        continue;
-      }
+      if (!user.telegramChatId) { skipped++; continue; }
+      if (user.notifs?.streak === false) { skipped++; continue; }
 
       const streak = user.streak || 0;
       const name   = user.name   || "there";
@@ -67,12 +63,11 @@ export async function GET(req: NextRequest) {
         message = `👑 <b>${streak}-day streak, ${name}!</b>\n\nLEGENDARY! You've been consistent for ${streak} days straight! 🏆\n\nLog today's expenses to maintain your legendary status!`;
       }
 
-      const tgResult = await sendTelegram(String(user.telegramChatId), message);
-      log.push({ uid: doc.id, name: user.name, telegramChatId: user.telegramChatId, streak, tgResult });
+      await sendTelegram(String(user.telegramChatId), message);
       sent++;
     }
 
-    return NextResponse.json({ ok: true, sent, skipped, log });
+    return NextResponse.json({ ok: true, sent, skipped });
 
   } catch (err: any) {
     console.error("[streak-reminder] ERROR:", err.message);
